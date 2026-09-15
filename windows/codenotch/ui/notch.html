@@ -78,7 +78,15 @@
     border:8px solid transparent;border-right:none;border-left:10px solid #0a0a0a;
   }
   .c-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
-  .c-title{font-size:16px;font-weight:700}
+  .c-title{font-size:16px;font-weight:700;min-width:0;overflow-wrap:anywhere}
+  /* Close button: the pill has no window chrome, so this is the only way out besides the tray menu */
+  .c-close{
+    margin-left:auto;flex:0 0 auto;width:22px;height:22px;border-radius:11px;
+    display:flex;align-items:center;justify-content:center;
+    background:#1c1c1c;border:1px solid #2e2e2e;color:#9a9a9e;
+    font-size:14px;line-height:1;cursor:pointer;
+  }
+  .c-close:hover{background:#3a1410;border-color:#7a2a20;color:#ff6a4d}
   .c-sub{font-size:12px;color:#808080;margin-bottom:10px}
   .win{margin-top:12px}
   .w-row{display:flex;justify-content:space-between;align-items:baseline;font-size:14px;flex-wrap:wrap;column-gap:8px;row-gap:5px}
@@ -137,6 +145,7 @@ const STRINGS={
     signin_codex:'Войдите в Codex, чтобы видеть расход.',
     signin_cursor:'Войдите в Cursor, чтобы видеть расход.',
     signin_gemini:'Войдите в Antigravity, чтобы видеть расход.',
+    quit_hint:'Закрыть Codenotch',
   },
   en:{
     usage_title:'{p} Usage',
@@ -155,6 +164,7 @@ const STRINGS={
     signin_codex:'Sign in to Codex to see usage.',
     signin_cursor:'Sign in to Cursor to see usage.',
     signin_gemini:'Sign in to Antigravity to see usage.',
+    quit_hint:'Quit Codenotch',
   },
 };
 function t(key,vars){
@@ -255,6 +265,7 @@ function renderRing(){
     glyph.classList.toggle('dim', !!(h && h.used>=1));
     wrap.classList.toggle('dim', staleOf(p.snap));
   }
+  reportPill();
 }
 
 function resetCopy(ms){
@@ -281,7 +292,8 @@ function renderCard(){
   const p=providers().find(x=>x.id===hoverId)||providers()[0];
   const snap=p.snap;
   const headIcon=glyphHtml(p,true);
-  let html=`<div class="c-head">${headIcon}<span class="c-title">${esc(t('usage_title',{p:p.name}))}</span></div>`;
+  let html=`<div class="c-head">${headIcon}<span class="c-title">${esc(t('usage_title',{p:p.name}))}</span>`
+    +`<div class="c-close" id="close" title="${esc(t('quit_hint'))}">&#10005;</div></div>`;
   if(staleOf(snap)&&snap.fetched_at) html+=`<div class="c-sub">${esc(t('updated',{ago:ago(snap.fetched_at)}))}</div>`;
   if(snap.status==='needsAuth'){
     const who=t({claude:'signin_claude',cursor:'signin_cursor',codex:'signin_codex',gemini:'signin_gemini'}[p.id]||'');
@@ -339,6 +351,17 @@ function placeCard(){
 
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
 
+/* Close button: exits the app (restart from the desktop shortcut).
+   Fires on mousedown, not click: renderCard rebuilds the card's innerHTML on every usage/state event,
+   so the element under the press can be gone by mouseup and no click event is ever produced. */
+document.getElementById('card').addEventListener('mousedown',e=>{
+  const hit=e.target.closest&&e.target.closest('#close');
+  jslog('card mousedown close='+!!hit);
+  if(!hit)return;
+  e.preventDefault();e.stopPropagation();
+  invoke('quit_app').catch(err=>notice('quit failed: '+err));
+},true);
+
 /* Hover: stays expanded while either the pill or the card is under the cursor; collapses after a 250 ms grace period (upstream motion rule) */
 const card=document.getElementById('card'), pill=document.getElementById('pill');
 let hideTimer=null;
@@ -352,6 +375,18 @@ function callq(cmd,args){ // invoke with visible failure: any command error is r
 }
 // Hot rectangles are reported in physical pixels (multiplied by this page's real DPR), so the Rust side does no conversion — WebView2's DPR and the window scale can disagree
 function rectOf(el){const r=el.getBoundingClientRect(),k=window.devicePixelRatio||1;return [r.left*k,r.top*k,r.width*k,r.height*k];}
+/* The window is mostly transparent, and a transparent pixel still belongs to it: the Rust side clips the
+   window to the pill so clicks in the empty area reach whatever is underneath. Report the pill's rectangle
+   whenever it can have moved or changed size; sending only on change keeps this off the hot path. */
+let pillSent='';
+function reportPill(){
+  const r=rectOf(pill);
+  if(!(r[2]>0&&r[3]>0))return;
+  const key=r.map(v=>Math.round(v)).join(',');
+  if(key===pillSent)return;
+  pillSent=key;
+  invoke('set_pill_rect',{rect:r}).catch(()=>{});
+}
 function armWatchdog(){
   requestAnimationFrame(()=>{ // wait one frame so renderCard's new content is laid out before measuring
     if(!card.classList.contains('show'))return;
@@ -369,6 +404,7 @@ function reportDpr(){
   const z=fitZoom();
   jslog(`dpr=${window.devicePixelRatio} inner=${innerWidth}x${innerHeight} cssZoom=${z.toFixed(3)}`);
   callq('report_dpr',{dpr:window.devicePixelRatio||1,w:innerWidth,h:innerHeight}).catch(()=>{});
+  pillSent=''; reportPill(); // the zoom change moves the pill inside the window
 }
 reportDpr();
 window.addEventListener('resize',()=>{clearTimeout(window._dprT);window._dprT=setTimeout(()=>{reportDpr();if(card.classList.contains('show'))armWatchdog();},120);});
@@ -426,7 +462,7 @@ document.addEventListener('mouseup',e=>{
   if(press&&!dragging) invoke('open_provider_page',{provider:press.id}).catch(()=>{});
   press=null;
 });
-listen('drag_end',()=>{dragging=false;press=null;}).catch(()=>{});
+listen('drag_end',()=>{dragging=false;press=null;pillSent='';reportPill();}).catch(()=>{});
 
 function notice(msg){
   const n=document.getElementById('notice');

@@ -341,10 +341,72 @@ fn open_provider_page(provider: String) {
 /// own devicePixelRatio before reporting them, so no scale conversion happens on this side —
 /// WebView2's DPR and the window's scale_factor can disagree (see report_dpr).
 static HOT: Mutex<Option<Vec<[f64; 4]>>> = Mutex::new(None);
+/// The pill's own rectangle (physical pixels, relative to the window's top-left), reported by the page
+/// whenever it can have changed. It is the hit region while the card is collapsed.
+static PILL: Mutex<Option<[f64; 4]>> = Mutex::new(None);
+
+/// Mouse hit region. The window is a 340 x 460 sheet of mostly transparent space pinned to the right
+/// edge, and a transparent pixel still belongs to the window: without a region every click inside that
+/// rectangle is swallowed by the notch instead of reaching the app underneath (buttons near the right
+/// edge simply stop responding). WS_EX_TRANSPARENT is no cure here — the mouse is taken by the child
+/// WebView2 window, not by ours — but a region on the parent clips the child with it.
+/// Rectangles are the ones the page already reports; the region is their bounding box, so the cursor can
+/// also cross the gap between pill and card while the card is open.
+#[cfg(windows)]
+fn apply_region(app: &AppHandle, rects: Option<Vec<[f64; 4]>>) {
+    use windows::Win32::Foundation::BOOL;
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, HRGN};
+    let Some(w) = app.get_webview_window("notch") else { return };
+    let Ok(h) = w.hwnd() else { return };
+    let hwnd = windows::Win32::Foundation::HWND(h.0 as isize as *mut core::ffi::c_void);
+    const PAD: f64 = 2.0;
+    let usable = rects.filter(|rs| !rs.is_empty() && rs.iter().all(|r| r[2] > 0.0 && r[3] > 0.0));
+    unsafe {
+        let Some(rs) = usable else {
+            // Nothing usable reported yet (startup, a reloaded WebView): hand the whole window back
+            // rather than risk clipping the pill itself out of reach
+            SetWindowRgn(hwnd, HRGN::default(), BOOL::from(true));
+            return;
+        };
+        let x0 = rs.iter().map(|r| r[0]).fold(f64::MAX, f64::min) - PAD;
+        let y0 = rs.iter().map(|r| r[1]).fold(f64::MAX, f64::min) - PAD;
+        let x1 = rs.iter().map(|r| r[0] + r[2]).fold(f64::MIN, f64::max) + PAD;
+        let y1 = rs.iter().map(|r| r[1] + r[3]).fold(f64::MIN, f64::max) + PAD;
+        let rgn = CreateRectRgn(
+            x0.floor() as i32,
+            y0.floor() as i32,
+            x1.ceil() as i32,
+            y1.ceil() as i32,
+        );
+        if SetWindowRgn(hwnd, rgn, BOOL::from(true)) == 0 {
+            let _ = DeleteObject(HGDIOBJ(rgn.0)); // the window took no ownership: the region is ours to free
+        }
+    }
+}
+#[cfg(not(windows))]
+fn apply_region(_app: &AppHandle, _rects: Option<Vec<[f64; 4]>>) {}
+
+/// Rebuild the region from what the page last reported: pill + card while the card is open, the pill alone otherwise.
+fn refresh_region(app: &AppHandle) {
+    let hot = HOT.lock().unwrap().clone();
+    let rects = match hot {
+        Some(r) if !r.is_empty() => Some(r),
+        _ => PILL.lock().unwrap().map(|p| vec![p]),
+    };
+    apply_region(app, rects);
+}
 
 #[tauri::command]
-fn set_expanded(on: bool, rects: Option<Vec<[f64; 4]>>) {
+fn set_expanded(app: AppHandle, on: bool, rects: Option<Vec<[f64; 4]>>) {
     *HOT.lock().unwrap() = if on { Some(rects.unwrap_or_default()) } else { None };
+    refresh_region(&app);
+}
+
+/// The pill's rectangle, reported by the page whenever it can have moved or changed size.
+#[tauri::command]
+fn set_pill_rect(app: AppHandle, rect: [f64; 4]) {
+    *PILL.lock().unwrap() = Some(rect);
+    refresh_region(&app);
 }
 
 /// The WebView zoom currently applied (1.0 = uncorrected)
@@ -450,6 +512,7 @@ fn start_pointer_watchdog(app: AppHandle) {
                 if miss >= 2 {
                     miss = 0;
                     *HOT.lock().unwrap() = None;
+                    refresh_region(&app);
                     let _ = app.emit("pointer_left", ());
                 }
             }
@@ -461,6 +524,12 @@ fn start_pointer_watchdog(app: AppHandle) {
 #[tauri::command]
 fn log_js(msg: String) {
     applog(&format!("js: {}", msg.chars().take(600).collect::<String>()));
+}
+
+/// Close button on the hover card: same exit as the tray's "Quit" item (the pill is the only UI, so it needs its own way out)
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -630,7 +699,9 @@ fn main() {
             log_js,
             focus_session,
             dismiss_session,
-            set_lang
+            set_lang,
+            quit_app,
+            set_pill_rect
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
