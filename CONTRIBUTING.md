@@ -1,81 +1,65 @@
 # Contributing
 
+This repository ships the **Windows** application in `windows/`. The macOS application in `Sources/`
+is the upstream project — contributions to it go to
+[vinzdg/codenotch](https://github.com/vinzdg/codenotch/blob/main/CONTRIBUTING.md), not here.
+
 ## Building
 
-```sh
-brew install xcodegen   # once — project.yml generates the .xcodeproj
-make build               # Debug build, ad-hoc signed
-make test                # unit tests
-make run                 # build and launch
+```powershell
+cd windows
+cargo build --release
+.\target\release\codenotch.exe
+.\target\release\codenotch.exe doctor    # what the app can see: credentials, data sources, hooks
 ```
 
-None of these need an Apple Developer account. `xcodebuild` ad-hoc signs a
-Debug build automatically, which is enough to run and debug locally. The one
-thing an unsigned build can't do is keep a keychain "Always Allow" grant across
-rebuilds — Claude Code's and Antigravity's credentials are guarded by an ACL
-keyed on the signing identity, and an ad-hoc identity changes every build. In
-practice this means the keychain prompt reappears each time you rebuild during
-development; that's expected and doesn't affect anything else.
-
-`make release` is different: it archives, signs with a Developer ID
-certificate, notarizes with Apple, and regenerates the Sparkle auto-update
-feed. That's the maintainer's job for cutting an official build, and it needs
-credentials only the maintainer has. You won't need it to contribute.
+Rust stable (MSVC) and the Visual Studio 2022 Build Tools with the C++ workload are the only
+prerequisites; see the [README](README.md#building-from-source). `ui/notch.html` is embedded at build
+time, so changes to the page need a rebuild, and a running `codenotch.exe` must be quit first.
 
 ## Before opening a PR
 
-- `make test` passes.
-- New behavior has a test. `Tests/` mirrors `Sources/` by concern, not by
-  file — look for the existing test class closest to what you're changing
-  before adding a new one.
-- If you're changing layout math in `Sources/Notch/NotchLayout.swift`, check it
-  against `docs/design/frame-124-hover-tooltip.png` — every constant there is
-  quoted from that frame in design-frame pixels via `Design.px(_:)`.
+There are no automated tests in the Windows tree. Instead, check the change against the real thing:
 
-## Code style
+- **Build is clean** — `cargo build --release` with no new warnings.
+- **The pill still behaves** — hover opens the card, the card follows the pointer between cells and
+  closes when the pointer leaves, drag moves the pill, × quits, tray items work.
+- **Clicks pass through** — with the app running, a click in the empty area next to the pill must
+  reach the application underneath. The quickest check is `WindowFromPoint` from PowerShell:
 
-- Comments explain **why**, not what — a hidden constraint, a bug a piece of
-  code works around, a design decision that would otherwise look arbitrary.
-  If removing a comment wouldn't confuse the next reader, it shouldn't be
-  there.
-- No premature abstraction. Three similar lines beat an early helper.
-- A provider adapter (`Sources/Providers/`) should degrade every failure to a
-  visible, honest status — `stale`, `needsAuth`, `accessDenied`, `error` — and
-  never invent a number. See `UsageProviderError` and `ProviderStatus`.
+  ```powershell
+  Add-Type @'
+  using System;using System.Runtime.InteropServices;
+  public struct PT{public int X,Y;public PT(int x,int y){X=x;Y=y;}}
+  public class W{[DllImport("user32.dll")]public static extern IntPtr WindowFromPoint(PT p);
+  [DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);}
+  '@
+  $h=[W]::WindowFromPoint((New-Object PT(2300,700))); $p=0; [void][W]::GetWindowThreadProcessId($h,[ref]$p)
+  (Get-Process -Id $p).ProcessName    # expected: the app under the notch, not msedgewebview2
+  ```
 
-## Visible copy
+  Use a point inside the window's rectangle but outside the pill (the rectangle is logged in
+  `run.log` as `notch placed ... pos=(x,y) size=(w x h)`).
+- **DPI** — if you touched geometry, try at least two scale factors (100 % and 125 % or 150 %).
+  `run.log` records the DPI report and the zoom correction on every start.
+- **Strings** — anything user-visible goes through `i18n.rs` (tray, window labels) or the
+  `STRINGS` table in `notch.html` (card), with at least `en` and `ru` filled in. `en` is the fallback.
+- **Comments explain why**, not what: a hidden constraint, a bug the code works around, a decision
+  that would otherwise look arbitrary. If removing a comment would not confuse the next reader, it
+  should not be there.
+- **Update `CHANGELOG.md`** under *Unreleased*.
 
-- User-visible strings (settings, menus, tooltips, notifications, What's New,
-  provider labels and status) go through `L10n.t("English source")`. The
-  English source **is** the key.
-- English is the source language. Put optional translations in
-  `Sources/Localizable.xcstrings`. A missing translation falls back to
-  English and must not fail tests — do not gate CI on any locale being
-  complete.
-- Don't freeze `L10n.t` in a `static let` — lookup has to see the current
-  language.
-- Follow System plus the in-app Language setting; don't set `AppleLanguages`.
-- Windows `windows/codenotch/src/i18n.rs` is a separate system — don't merge
-  the two.
+## Upstream etiquette
 
-## Adding a provider
+The fork exists to be mergeable. Keep changes to `windows/` small and self-contained, do not touch
+`Sources/`, and prefer a constant or a config key to a fork of a function. When upstream changes
+`windows/`, merge it by hand and re-check the list above.
 
-Implement `UsageProvider` (`Sources/Providers/UsageProvider.swift`). At
-minimum:
-
-- Declare a `Fidelity` — `.official` if the number comes from the vendor's own
-  endpoint or local state, `.derived` if you computed it yourself (the
-  tooltip prefixes a `~`), `.manual` if it's a placeholder.
-- Every failure path should map to a `ProviderStatus`, not throw something the
-  UI can't render — see how `ClaudeOAuthProvider` and `CodexLocalProvider`
-  handle theirs.
-- If the credential lives in the keychain, hold it with `CredentialCache`
-  rather than reading on every poll — see its doc comment for why.
+A change that is useful to everyone — not tied to the Russian locale or to this fork's choices —
+belongs upstream first: open a PR against
+[vinzdg/codenotch](https://github.com/vinzdg/codenotch) and merge it here from there.
 
 ## Reporting a bug
 
-Include the unified log around the time it happened:
-
-```sh
-/usr/bin/log show --last 10m --predicate 'subsystem == "com.vinz.codenotch"' --info --debug
-```
+Use the [issue template](.github/ISSUE_TEMPLATE/bug_report.md). Include the output of
+`codenotch.exe doctor` and the tail of `%APPDATA%\codenotch\run.log`; neither contains tokens.

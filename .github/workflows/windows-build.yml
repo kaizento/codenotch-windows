@@ -1,0 +1,50 @@
+# Builds the Windows application on every change under windows/ and keeps the two binaries as a
+# downloadable artifact, so a change can be tried without a local Rust toolchain.
+# The upstream macOS workflows (ci.yml, package.yml) are disabled in this repository.
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Check formatting of the app crate
+        run: cargo fmt --all -- --check
+        continue-on-error: true # the port was not rustfmt-clean when forked; informative only
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codenotch-windows-x64
+          path: |
+            windows/target/release/codenotch.exe
+            windows/target/release/codenotch-hook.exe
+          if-no-files-found: error
+          retention-days: 14

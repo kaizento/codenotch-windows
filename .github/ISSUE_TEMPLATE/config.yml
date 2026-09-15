@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: macOS application (upstream)
+    url: https://github.com/vinzdg/codenotch/issues
+    about: Issues with the macOS app in Sources/ belong to the upstream project.
+  - name: Security report
+    url: https://github.com/kaizento/codenotch-windows/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.

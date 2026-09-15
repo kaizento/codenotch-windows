@@ -1,5 +1,10 @@
 # Codenotch for Windows
 
+> This tree is built and released as [kaizento/codenotch-windows](https://github.com/kaizento/codenotch-windows)
+> (Russian locale, Cursor cell off, close button, window hit region). The repository README
+> covers installation and day-to-day use; what follows is the port's technical description.
+> Fork changes are listed in [`../CHANGELOG.md`](../CHANGELOG.md).
+
 A Windows port of [Codenotch](https://github.com/vinzdg/codenotch) — the usage notch that
 sits on the edge of your screen and answers two questions at a glance:
 **how much of my AI allowance is left**, and **is Claude still working**.
